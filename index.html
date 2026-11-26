@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>10 × 10 巡检机器人仿真</title>
+  <title>10 × 10 巡检机器人 · 标准版</title>
   <style>
     * {
       box-sizing: border-box;
@@ -84,12 +84,6 @@
       transform: scale(0.96);
     }
 
-    .controls button:disabled {
-      background: #93c5fd;
-      cursor: not-allowed;
-    }
-
-    /* 按钮排成方向键布局：上 / 左 下 右 */
     .controls button[data-direction="up"] {
       grid-column: 2;
       grid-row: 1;
@@ -110,9 +104,100 @@
       grid-row: 2;
     }
 
+    .action-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .action-row button {
+      flex: 1;
+      height: 44px;
+      border: 0;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease;
+    }
+
+    .action-row button:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    #auto-patrol {
+      background: #059669;
+      color: #ffffff;
+    }
+
+    #auto-patrol:hover:not(:disabled) {
+      background: #047857;
+    }
+
+    #reset {
+      background: #e5e7eb;
+      color: #374151;
+    }
+
+    #reset:hover:not(:disabled) {
+      background: #d1d5db;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .target-hint {
+      margin: 8px 0 0;
+      color: #6b7280;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .sensor {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border: 1px solid #bbf7d0;
+      border-radius: 12px;
+      background: #f0fdf4;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+
+    .sensor.danger {
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+
+    .sensor-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #6b7280;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .sensor-status {
+      margin: 6px 0 2px;
+      color: #15803d;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .sensor.danger .sensor-status {
+      color: #dc2626;
+    }
+
+    .sensor-detail {
+      margin: 0;
+      color: #6b7280;
+      font-size: 12px;
+    }
+
     #panel {
       width: 100%;
-      margin-top: 16px;
+      margin-top: 14px;
       padding: 10px 12px;
       resize: none;
       border: 1px solid #1e293b;
@@ -133,19 +218,34 @@
 <body>
   <main class="container">
     <h1>🤖 10 × 10 巡检机器人</h1>
-    <p class="subtitle">白色 = 可通行 · 黑色 = 障碍物 · 红点 = 机器人</p>
+    <p class="subtitle">手动控制 · A* 自动巡检 · 虚拟传感器</p>
 
     <canvas id="maze" width="400" height="400" aria-label="10 × 10 巡检地图"></canvas>
 
-    <div class="controls" id="controls">
+    <div class="controls" id="manual-controls">
       <button type="button" data-direction="up" aria-label="向上移动">↑ 上</button>
       <button type="button" data-direction="left" aria-label="向左移动">← 左</button>
       <button type="button" data-direction="down" aria-label="向下移动">↓ 下</button>
       <button type="button" data-direction="right" aria-label="向右移动">→ 右</button>
     </div>
 
-    <textarea id="panel" rows="7" readonly aria-live="polite"></textarea>
-    <p class="hint">提示：也可以使用键盘方向键（或 W / A / S / D）控制机器人</p>
+    <div class="action-row">
+      <button type="button" id="auto-patrol">🚀 开始自动巡检</button>
+      <button type="button" id="reset">↺ 重置</button>
+    </div>
+    <p class="target-hint">自动巡检目标：<strong>(9, 9)</strong> · 每 0.5 秒移动一格</p>
+
+    <section id="sensor-panel" class="sensor safe" aria-live="polite">
+      <div class="sensor-head">
+        <span>📡 虚拟传感器</span>
+        <span id="sensor-coords">--</span>
+      </div>
+      <p id="sensor-status" class="sensor-status">等待数据...</p>
+      <p id="sensor-detail" class="sensor-detail">正在连接后端</p>
+    </section>
+
+    <textarea id="panel" rows="6" readonly aria-live="polite"></textarea>
+    <p class="hint">提示：方向键或 W / A / S / D 可手动控制机器人</p>
   </main>
 
   <script>
@@ -157,11 +257,8 @@
     const COLS = 10;
     const WIDTH = COLS * CELL;
     const HEIGHT = ROWS * CELL;
-
-    const canvas = document.getElementById('maze');
-    const ctx = canvas.getContext('2d');
-    const panel = document.getElementById('panel');
-    const buttons = Array.from(document.querySelectorAll('.controls button'));
+    const PATROL_TARGET = [9, 9];
+    const PATROL_INTERVAL = 500;
 
     const DIRECTION_LABELS = { up: '上', down: '下', left: '左', right: '右' };
     const DIRECTION_VECTORS = {
@@ -171,18 +268,33 @@
       right: [1, 0]
     };
 
-    // 初始为空地图，收到后端数据后替换
+    const canvas = document.getElementById('maze');
+    const ctx = canvas.getContext('2d');
+    const panel = document.getElementById('panel');
+    const manualButtons = Array.from(document.querySelectorAll('#manual-controls button'));
+    const autoButton = document.getElementById('auto-patrol');
+    const resetButton = document.getElementById('reset');
+    const sensorPanel = document.getElementById('sensor-panel');
+    const sensorCoords = document.getElementById('sensor-coords');
+    const sensorStatus = document.getElementById('sensor-status');
+    const sensorDetail = document.getElementById('sensor-detail');
+
     let maze = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
     let robot = null;
     let busy = false;
+    let patrolTimer = null;
+    let patrolPath = [];
     const logLines = [];
 
+    function inBounds(x, y) {
+      return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+    }
+
     function draw() {
-      // 清空画布
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-      // 1. 绘制地图：0 = 白，1 = 黑
+      // 地图：0 = 白色可通行，1 = 黑色障碍物
       for (let y = 0; y < ROWS; y++) {
         for (let x = 0; x < COLS; x++) {
           ctx.fillStyle = maze[y] && maze[y][x] === 1 ? '#111827' : '#ffffff';
@@ -190,7 +302,7 @@
         }
       }
 
-      // 2. 绘制网格线
+      // 网格线
       ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -206,38 +318,41 @@
       }
       ctx.stroke();
 
-      // 3. 绘制机器人（红色圆点）
       if (!robot) return;
 
-      const cx = robot.x * CELL + CELL / 2;
-      const cy = robot.y * CELL + CELL / 2;
-      const radius = CELL * 0.32;
+      // 红色机器人方块
+      const padding = 6;
+      const px = robot.x * CELL + padding;
+      const py = robot.y * CELL + padding;
+      const size = CELL - padding * 2;
 
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fillStyle = '#ef4444';
-      ctx.fill();
+      ctx.fillRect(px, py, size, size);
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
-      ctx.stroke();
+      ctx.strokeRect(px, py, size, size);
 
-      // 圆点内的小短线表示朝向
+      // 方块中的白色短线表示朝向
+      const cx = robot.x * CELL + CELL / 2;
+      const cy = robot.y * CELL + CELL / 2;
       const [dx, dy] = DIRECTION_VECTORS[robot.direction] || [0, -1];
+
       ctx.beginPath();
       ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + dx * radius * 0.65, cy + dy * radius * 0.65);
+      ctx.lineTo(cx + dx * 10, cy + dy * 10);
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 3;
       ctx.lineCap = 'round';
       ctx.stroke();
       ctx.lineCap = 'butt';
     }
 
     function renderPanel() {
+      const mode = patrolTimer !== null ? '自动巡检中' : '手动控制';
       const header = robot
-        ? `当前坐标: (${robot.x}, ${robot.y})    朝向: ${robot.direction}`
-        : '当前坐标: --    朝向: --';
-      const divider = '─'.repeat(36);
+        ? `当前坐标: (${robot.x}, ${robot.y})    朝向: ${robot.direction}    模式: ${mode}`
+        : '当前坐标: --';
+      const divider = '─'.repeat(42);
       const messages = logLines.length ? logLines : ['等待连接后端...'];
 
       panel.value = [header, divider, ...messages].join('\n');
@@ -247,15 +362,71 @@
     function addLog(message) {
       const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       logLines.push(`[${time}] ${message}`);
-      if (logLines.length > 8) logLines.shift();
+      if (logLines.length > 4) logLines.shift();
       renderPanel();
     }
 
-    function setBusy(value) {
-      busy = value;
-      buttons.forEach((button) => {
-        button.disabled = value;
+    function updateSensor() {
+      if (!robot) {
+        sensorCoords.textContent = '--';
+        sensorStatus.textContent = '等待数据...';
+        sensorDetail.textContent = '正在连接后端';
+        sensorPanel.classList.add('safe');
+        sensorPanel.classList.remove('danger');
+        return;
+      }
+
+      const directions = [
+        { label: '上', dx: 0, dy: -1 },
+        { label: '下', dx: 0, dy: 1 },
+        { label: '左', dx: -1, dy: 0 },
+        { label: '右', dx: 1, dy: 0 }
+      ];
+      const blocked = [];
+
+      for (const item of directions) {
+        const nx = robot.x + item.dx;
+        const ny = robot.y + item.dy;
+        if (inBounds(nx, ny) && maze[ny][nx] === 1) {
+          blocked.push(item.label);
+        }
+      }
+
+      const danger = blocked.length > 0;
+      sensorCoords.textContent = `(${robot.x}, ${robot.y})`;
+      sensorPanel.classList.toggle('danger', danger);
+      sensorPanel.classList.toggle('safe', !danger);
+      sensorStatus.textContent = danger ? '前方有障碍物！' : '安全通行';
+      sensorDetail.textContent = danger
+        ? `检测到障碍方向：${blocked.join('、')}`
+        : '四周未检测到障碍物';
+    }
+
+    function updateControlState() {
+      const locked = busy || patrolTimer !== null;
+      manualButtons.forEach((button) => {
+        button.disabled = locked;
       });
+      autoButton.disabled = locked;
+      resetButton.disabled = busy;
+    }
+
+    async function refreshState() {
+      const response = await fetch(`${API_BASE}/api/state`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`/api/state 返回 HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!Array.isArray(data.maze) || !data.robot) {
+        throw new Error('/api/state 返回的数据格式不正确');
+      }
+
+      maze = data.maze;
+      robot = data.robot;
+      draw();
+      updateSensor();
+      renderPanel();
     }
 
     function formatError(status, error) {
@@ -273,26 +444,10 @@
       return `移动失败（HTTP ${status}）：${clean || '未知错误'}`;
     }
 
-    async function refreshState() {
-      const response = await fetch(`${API_BASE}/api/state`, { cache: 'no-store' });
-      if (!response.ok) {
-        throw new Error(`/api/state 返回 HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (!Array.isArray(data.maze) || !data.robot) {
-        throw new Error('/api/state 返回的数据格式不正确');
-      }
-
-      maze = data.maze;
-      robot = data.robot;
-      draw();
-      renderPanel();
-    }
-
-    async function move(direction) {
-      if (busy) return;
-      setBusy(true);
+    async function manualMove(direction) {
+      if (busy || patrolTimer !== null) return;
+      busy = true;
+      updateControlState();
 
       try {
         const response = await fetch(`${API_BASE}/api/move`, {
@@ -311,36 +466,201 @@
         if (!response.ok || data.success === false) {
           addLog(`❌ ${formatError(response.status, data.error)}`);
         } else {
-          addLog(`✅ 已向${DIRECTION_LABELS[direction]}移动`);
+          addLog(`✅ 手动移动到 (${data.robot.x}, ${data.robot.y})`);
         }
 
-        // 无论成功与否，都重新获取状态并重绘，确保画面与后端一致
         await refreshState();
       } catch (error) {
         addLog(`⚠️ 请求失败：${error.message}`);
       } finally {
-        setBusy(false);
+        busy = false;
+        updateControlState();
+      }
+    }
+
+    function directionBetween(from, to) {
+      const dx = to[0] - from[0];
+      const dy = to[1] - from[1];
+
+      if (dx === 1) return 'right';
+      if (dx === -1) return 'left';
+      if (dy === 1) return 'down';
+      return 'up';
+    }
+
+    function stopPatrol() {
+      if (patrolTimer !== null) {
+        clearInterval(patrolTimer);
+        patrolTimer = null;
+        addLog('⏹ 自动巡检已停止');
+      }
+      patrolPath = [];
+      renderPanel();
+    }
+
+    function finishPatrol() {
+      if (patrolTimer === null) return;
+
+      clearInterval(patrolTimer);
+      patrolTimer = null;
+      patrolPath = [];
+      addLog('✅ 自动巡检完成');
+      updateControlState();
+
+      refreshState().catch((error) => {
+        addLog(`⚠️ 同步状态失败：${error.message}`);
+      });
+    }
+
+    function startPatrolAnimation(path) {
+      let step = 1;
+      let previous = path[0];
+
+      patrolTimer = setInterval(() => {
+        if (step >= path.length) {
+          finishPatrol();
+          return;
+        }
+
+        const point = path[step];
+        robot = {
+          x: point[0],
+          y: point[1],
+          direction: directionBetween(previous, point)
+        };
+        previous = point;
+        step += 1;
+
+        draw();
+        updateSensor();
+        renderPanel();
+
+        if (step >= path.length) {
+          finishPatrol();
+        }
+      }, PATROL_INTERVAL);
+
+      updateControlState();
+    }
+
+    async function startAutoPatrol() {
+      if (busy || patrolTimer !== null) return;
+      busy = true;
+      updateControlState();
+
+      try {
+        addLog(`🔎 正在规划到 (${PATROL_TARGET[0]}, ${PATROL_TARGET[1]}) 的路径...`);
+
+        const response = await fetch(`${API_BASE}/api/auto_patrol`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal: PATROL_TARGET })
+        });
+
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (parseError) {
+          data = {};
+        }
+
+        if (
+          !response.ok ||
+          data.status !== 'success' ||
+          !Array.isArray(data.path) ||
+          data.path.length === 0
+        ) {
+          addLog(`❌ ${data.message || '目标不可达，请重新选择'}`);
+          return;
+        }
+
+        const validPath = data.path.every(
+          (point) =>
+            Array.isArray(point) &&
+            point.length === 2 &&
+            Number.isInteger(point[0]) &&
+            Number.isInteger(point[1])
+        );
+        if (!validPath) {
+          throw new Error('后端返回的路径格式不正确');
+        }
+
+        const path = data.path;
+        robot = {
+          x: path[0][0],
+          y: path[0][1],
+          direction: robot ? robot.direction : 'up'
+        };
+        draw();
+        updateSensor();
+        renderPanel();
+        addLog(`✅ 路径规划成功，共 ${path.length} 个节点`);
+
+        if (path.length <= 1) {
+          addLog('ℹ️ 机器人已经在目标位置');
+          return;
+        }
+
+        startPatrolAnimation(path);
+      } catch (error) {
+        addLog(`⚠️ 自动巡检失败：${error.message}`);
+      } finally {
+        busy = false;
+        updateControlState();
+      }
+    }
+
+    async function resetRobot() {
+      stopPatrol();
+      busy = true;
+      updateControlState();
+
+      try {
+        const response = await fetch(`${API_BASE}/api/reset`, { method: 'POST' });
+        if (!response.ok) {
+          throw new Error(`/api/reset 返回 HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!Array.isArray(data.maze) || !data.robot) {
+          throw new Error('返回的数据格式不正确');
+        }
+
+        maze = data.maze;
+        robot = data.robot;
+        draw();
+        updateSensor();
+        renderPanel();
+        addLog('↺ 已重置到起点 (0, 0)');
+      } catch (error) {
+        addLog(`⚠️ 重置失败：${error.message}`);
+      } finally {
+        busy = false;
+        updateControlState();
       }
     }
 
     async function init() {
       draw();
       renderPanel();
+      updateSensor();
 
       try {
         await refreshState();
         addLog('✅ 已连接后端，地图加载完成');
       } catch (error) {
-        addLog(`⚠️ 无法连接后端（${API_BASE}）：${error.message}`);
-        addLog('请先运行 python app.py，然后刷新本页面。');
+        addLog(`⚠️ 无法连接后端：${error.message}`);
+        addLog('请确认 python app.py 或 Docker 容器已启动。');
       }
     }
 
-    buttons.forEach((button) => {
-      button.addEventListener('click', () => move(button.dataset.direction));
+    manualButtons.forEach((button) => {
+      button.addEventListener('click', () => manualMove(button.dataset.direction));
     });
 
-    // 键盘控制
+    autoButton.addEventListener('click', startAutoPatrol);
+    resetButton.addEventListener('click', resetRobot);
+
     document.addEventListener('keydown', (event) => {
       const keyMap = {
         ArrowUp: 'up',
@@ -354,9 +674,11 @@
       };
 
       const direction = keyMap[event.key] || keyMap[event.key.toLowerCase()];
-      if (direction) {
-        event.preventDefault();
-        move(direction);
+      if (!direction) return;
+
+      event.preventDefault();
+      if (!busy && patrolTimer === null) {
+        manualMove(direction);
       }
     });
 
