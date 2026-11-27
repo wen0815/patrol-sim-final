@@ -433,7 +433,7 @@
       const clean = String(error || '').replace(/^移动失败[:：]\s*/, '');
 
       if (status === 409) {
-        return `撞墙了！${clean || '前方有障碍物'}`;
+        return `撞墙了！！！${clean || '前方有障碍物！'}`;
       }
       if (status === 400) {
         if (clean.includes('边界')) {
