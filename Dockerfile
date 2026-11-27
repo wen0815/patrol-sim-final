@@ -1,5 +1,6 @@
 FROM python:3.9-slim
 
+# 运维规范：基于轻量级镜像
 # 让 Python 输出直接进入容器日志，并避免生成 .pyc 文件
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
